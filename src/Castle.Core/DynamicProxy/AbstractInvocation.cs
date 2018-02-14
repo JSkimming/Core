@@ -1,11 +1,11 @@
 // Copyright 2004-2011 Castle Project - http://www.castleproject.org/
-// 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-// 
+//
 //     http://www.apache.org/licenses/LICENSE-2.0
-// 
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,8 +15,73 @@
 namespace Castle.DynamicProxy
 {
 	using System;
+	using System.Collections.Generic;
 	using System.Diagnostics;
+	using System.IO;
+	using System.Linq;
 	using System.Reflection;
+	using System.Threading;
+
+	internal class ListLogger
+	{
+		private readonly List<string> _log = new List<string>(8);
+
+		private readonly object _lock = new object();
+
+		public int Count
+		{
+			get
+			{
+				lock (_lock)
+				{
+					return _log.Count;
+				}
+			}
+		}
+
+		public string this[int index]
+		{
+			get
+			{
+				lock (_lock)
+				{
+					return _log[index];
+				}
+			}
+		}
+
+		public string First()
+		{
+			lock (_lock)
+			{
+				return _log[0];
+			}
+		}
+
+		public string Last()
+		{
+			lock (_lock)
+			{
+				return _log[_log.Count - 1];
+			}
+		}
+
+		public void Add(string message)
+		{
+			lock (_lock)
+			{
+				_log.Add(message);
+			}
+		}
+
+		public IReadOnlyList<string> GetLog()
+		{
+			lock (_lock)
+			{
+				return _log.ToList();
+			}
+		}
+	}
 
 	public abstract class AbstractInvocation : IInvocation
 	{
@@ -26,6 +91,8 @@ namespace Castle.DynamicProxy
 		private Type[] genericMethodArguments;
 		private readonly MethodInfo proxiedMethod;
 		protected readonly object proxyObject;
+		private readonly ListLogger _log = new ListLogger();
+		private readonly object _lock = new object();
 
 		protected AbstractInvocation(
 			object proxy,
@@ -106,14 +173,28 @@ namespace Castle.DynamicProxy
 				return;
 			}
 
-			currentInterceptorIndex++;
+			int icIndex = -1;
+			lock (_lock)
+			{
+				icIndex = Interlocked.Increment(ref currentInterceptorIndex);
+			}
+
 			try
 			{
-				if (currentInterceptorIndex == interceptors.Length)
+				if (icIndex == interceptors.Length)
 				{
+#if DOTNET45
+					_log.Add(
+						$"Calling the method icIndex={icIndex}, thisIndex={currentInterceptorIndex}, " +
+						$"this={GetHashCode()}, Thread={Thread.CurrentThread.ManagedThreadId}.");
+					////Console.WriteLine(
+					////	"Calling the method icIndex={0}, Thread={1}.",
+					////	icIndex,
+					////	Thread.CurrentThread.ManagedThreadId);
+#endif
 					InvokeMethodOnTarget();
 				}
-				else if (currentInterceptorIndex > interceptors.Length)
+				else if (icIndex > interceptors.Length)
 				{
 					string interceptorsCount;
 					if (interceptors.Length > 1)
@@ -133,12 +214,28 @@ namespace Castle.DynamicProxy
 				}
 				else
 				{
-					interceptors[currentInterceptorIndex].Intercept(this);
+#if DOTNET45
+					_log.Add($"Calling the interceptor icIndex={icIndex}, thisIndex={currentInterceptorIndex}, " +
+					         $"this={GetHashCode()}, Thread={Thread.CurrentThread.ManagedThreadId}.");
+					////Console.WriteLine(
+					////	"Calling the interceptor icIndex={0}, Thread={1}.",
+					////	icIndex,
+					////	Thread.CurrentThread.ManagedThreadId);
+#endif
+					interceptors[icIndex].Intercept(this);
 				}
 			}
 			finally
 			{
-				currentInterceptorIndex--;
+				lock (_lock)
+				{
+					icIndex = Interlocked.Decrement(ref currentInterceptorIndex);
+				}
+#if DOTNET45
+				_log.Add(
+					$"Decrementing icIndex={icIndex}, thisIndex={currentInterceptorIndex}, " +
+					$"this={GetHashCode()}, Thread={Thread.CurrentThread.ManagedThreadId}.");
+#endif
 			}
 		}
 
